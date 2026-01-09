@@ -1,0 +1,143 @@
+services:
+  zookeeper:
+    container_name: hista-zookeeper
+    image: confluentinc/cp-zookeeper:7.4.4
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - 22182:2181
+    restart: unless-stopped
+
+  kafka:
+    container_name: hista-kafka
+    image: confluentinc/cp-kafka:7.4.4
+    depends_on:
+      - zookeeper
+    ports:
+      - 29093:29092
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    restart: unless-stopped
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    depends_on:
+      - kafka
+    ports:
+      - "6002:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: hista-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9002:9000"
+      - "9003:9001"
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+  redis:
+    image: redis:alpine
+    container_name: hista-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+
+  hista:
+    build:
+      context: ./ApiService
+      dockerfile: Dockerfile
+    container_name: hista
+    environment:
+      KAFKA_BROKER: kafka:9092
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      READ_TOPIC: result
+      WRITE_TOPIC: preprocessor
+
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - kafka
+      - redis
+      - minio
+    volumes:
+      - ./ApiService:/app
+    ports:
+      - "6003:8000"
+    restart: unless-stopped
+
+  preprocessor:
+    build:
+      context: ./PreProcessorService
+      dockerfile: Dockerfile
+    container_name: hista-preprocessor
+    environment:
+      KAFKA_BROKER: kafka:9092
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      READ_TOPIC: preprocessor
+      WRITE_TOPIC: mlprocessor
+    depends_on:
+      - kafka
+      - redis
+      - minio
+    volumes:
+      - ./PreProcessorService:/app
+    ports:
+      - "6004:8000"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "5.0" # Ограничение до 5 CPU
+        reservations:
+          cpus: "2.0" # Гарантированное выделение 2.0 CPU
+
+  mlprocessor:
+    build:
+      context: ./MLProcessorService
+      dockerfile: Dockerfile
+    container_name: hista-mlprocessor
+    environment:
+      KAFKA_BROKER: kafka:9092
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      READ_TOPIC: mlprocessor
+      WRITE_TOPIC: result
+    depends_on:
+      - kafka
+      - redis
+      - minio
+    volumes:
+      - ./MLProcessorService:/app
+    ports:
+      - "6005:8000"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "5.0" # Ограничение до 5 CPU
+        reservations:
+          cpus: "2.0" # Гарантированное выделение 2.0 CPU
+
+volumes:
+  minio_data:
